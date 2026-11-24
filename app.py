@@ -15,6 +15,21 @@ def main():
     if 'login_type' not in st.session_state:
         st.session_state['login_type'] = None
 
+    # Handle incoming query parameters
+    reset_token = st.query_params.get('reset_token')
+    if reset_token:
+        st.session_state['login_type'] = 'teacher'
+        st.session_state['teacher_login_type'] = 'reset_password'
+        st.session_state['active_reset_token'] = reset_token
+
+    join_code = st.query_params.get('join-code')
+    if join_code:
+        if st.session_state.login_type != 'student':
+            st.session_state.login_type = 'student'
+            st.rerun()
+        if st.session_state.get('is_logged_in') and st.session_state.get('user_role') == 'student':
+            auto_enroll_dialog(join_code)
+
     match st.session_state['login_type']:
         case 'teacher':
             teacher_screen()
@@ -25,12 +40,4 @@ def main():
         case None:
             home_screen()
 
-
-    join_code = st.query_params.get('join-code')
-    if join_code:
-        if st.session_state.login_type != 'student':
-            st.session_state.login_type = 'student'
-            st.rerun()
-        if st.session_state.get('is_logged_in') and st.session_state.get('user_role') == 'student':
-            auto_enroll_dialog(join_code)
 main()
