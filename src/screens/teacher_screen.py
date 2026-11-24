@@ -265,6 +265,7 @@ def teacher_tab_attendance_records():
     records = get_attendance_for_teacher(teacher_id)
 
     if not records:
+        st.info("No attendance records found yet.")
         return
     
     data = []
@@ -299,6 +300,59 @@ def teacher_tab_attendance_records():
     )
     
     st.dataframe(display_df, width='stretch', hide_index=True)
+
+    # Detailed Student Attendance Export by Date / Session
+    session_map = {}
+    for _, row in summary.sort_values(by='ts_group', ascending=False).iterrows():
+        label = f"{row['Time']} — {row['Subject']} ({row['Subject Code']})"
+        session_map[label] = row['ts_group']
+
+    col_d1, col_d2 = st.columns([3, 1], vertical_alignment='bottom')
+
+    with col_d1:
+        selected_session_label = st.selectbox(
+            "Select Date / Session to Download",
+            options=["All Dates & Sessions"] + list(session_map.keys()),
+            key="download_session_select"
+        )
+
+    # Build detailed records containing Student Name and Attendance status
+    detailed_data = []
+    for r in records:
+        ts = r.get('timestamp')
+        ts_grp = ts.split(".")[0] if ts else None
+
+        if selected_session_label != "All Dates & Sessions" and ts_grp != session_map.get(selected_session_label):
+            continue
+
+        student = r.get('students') or {}
+        detailed_data.append({
+            "Date": datetime.fromisoformat(ts).strftime("%Y-%m-%d") if ts else "N/A",
+            "Time": datetime.fromisoformat(ts).strftime("%I:%M %p") if ts else "N/A",
+            "Subject": r['subjects']['name'],
+            "Subject Code": r['subjects']['subject_code'],
+            "Student ID": student.get('student_id', 'N/A'),
+            "Student Name": student.get('name', 'Unknown Student'),
+            "Attendance": "Present" if r.get('is_present') else "Absent"
+        })
+
+    detailed_df = pd.DataFrame(detailed_data)
+    if not detailed_df.empty:
+        detailed_df = detailed_df.sort_values(by=["Date", "Time", "Student Name"], ascending=[False, False, True])
+
+    csv_bytes = detailed_df.to_csv(index=False).encode('utf-8')
+
+    with col_d2:
+        file_suffix = "all" if selected_session_label == "All Dates & Sessions" else selected_session_label.split("—")[0].strip().replace(":", "-").replace(" ", "_")
+        st.download_button(
+            label="Download CSV",
+            data=csv_bytes,
+            file_name=f"attendance_{file_suffix}.csv",
+            mime="text/csv",
+            type="primary",
+            icon=":material/download:",
+            width="stretch"
+        )
 
 
 def login_teacher(username, password):

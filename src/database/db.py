@@ -100,8 +100,10 @@ def teacher_login(username_or_email, password):
     if not username_or_email or not password:
         return None
     teacher = find_teacher_by_email_or_username(username_or_email)
-    if teacher and check_pass(password.strip(), teacher['password']):
-        return teacher
+    if teacher:
+        stored_hash = teacher.get('password', '')
+        if check_pass(password, stored_hash) or check_pass(password.strip(), stored_hash):
+            return teacher
     return None
 
 
@@ -331,6 +333,6 @@ def create_attendance(logs):
     return response.data
 
 def get_attendance_for_teacher(teacher_id):
-    response = supabase.table('attendance_logs').select("*, subjects!inner(*)").eq('subjects.teacher_id', teacher_id).execute()
+    response = supabase.table('attendance_logs').select("*, subjects!inner(*), students(*)").eq('subjects.teacher_id', teacher_id).execute()
     return response.data
 
