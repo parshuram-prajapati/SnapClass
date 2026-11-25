@@ -11,8 +11,8 @@ logger = logging.getLogger(__name__)
 MAX_UPLOAD_SIZE_MB = 25  # Configurable maximum file size limit in MB
 MAX_IMAGE_DIMENSION = 2048  # Target max dimension for classroom group photos
 MAX_TOTAL_PIXELS = 100_000_000  # 100 megapixels decompression bomb limit
-SUPPORTED_EXTENSIONS = ('.jpg', '.jpeg', '.png')
-SUPPORTED_FORMATS = ('JPEG', 'PNG')
+SUPPORTED_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.mpo')
+SUPPORTED_FORMATS = ('JPEG', 'PNG', 'MPO')
 
 # Prevent decompression bomb attacks/errors while safely allowing high-res photos
 Image.MAX_IMAGE_PIXELS = MAX_TOTAL_PIXELS
@@ -63,7 +63,7 @@ def validate_image_file(
         if filename:
             ext = os.path.splitext(filename.lower())[1]
             if ext not in SUPPORTED_EXTENSIONS:
-                return False, f"Unsupported file extension '{ext}'. Please upload JPG, JPEG, or PNG."
+                return False, f"Unsupported file extension '{ext}'. Please upload JPG, JPEG, PNG, or MPO."
 
         # 3. Verify image with Pillow
         bio.seek(0)
@@ -71,7 +71,7 @@ def validate_image_file(
             with Image.open(bio) as img:
                 img_format = img.format
                 if img_format not in SUPPORTED_FORMATS:
-                    return False, f"Unsupported image format: {img_format}. Only JPEG and PNG are supported."
+                    return False, f"Unsupported image format: {img_format}. Only JPEG, PNG, and MPO are supported."
                 img.verify()  # Verifies file integrity
         except Exception as e:
             return False, f"Corrupted or invalid image file: {str(e)}"

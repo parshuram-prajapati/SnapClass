@@ -51,8 +51,8 @@ def add_photos_dialog():
 
     if st.session_state.photo_tab == 'upload':
         uploaded_files = st.file_uploader(
-            f'Choose image files (JPG, JPEG, PNG, max {MAX_UPLOAD_SIZE_MB}MB)',
-            type=['jpg', 'png', 'jpeg'],
+            f'Choose image files (JPG, JPEG, PNG, MPO, max {MAX_UPLOAD_SIZE_MB}MB)',
+            type=['jpg', 'png', 'jpeg', 'mpo'],
             accept_multiple_files=True,
             key='dialog_upload'
         )
