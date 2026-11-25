@@ -13,8 +13,8 @@ from src.database.db import get_all_students
 logger = logging.getLogger(__name__)
 
 # Configurable default face matching threshold (Euclidean distance on 128D embeddings)
-# 0.48 provides strict matching: avoids false positives where strangers/new friends match registered students
-DEFAULT_CONFIDENCE_THRESHOLD = 0.48
+# 0.55 balances matching registered students with rejecting unknown faces
+DEFAULT_CONFIDENCE_THRESHOLD = 0.55
 
 
 @st.cache_resource

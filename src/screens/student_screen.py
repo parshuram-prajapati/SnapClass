@@ -138,8 +138,8 @@ def student_screen_login():
         img = np.array(Image.open(photo_source))
 
         with st.spinner('AI is verifying your identity...'):
-            # Use strict 0.48 confidence threshold to prevent false matches on strangers
-            detected, all_ids, num_faces = predict_attendance(img, confidence_threshold=0.48)
+            # Use strict 0.55 confidence threshold to prevent false matches on strangers
+            detected, all_ids, num_faces = predict_attendance(img, confidence_threshold=0.55)
 
             if num_faces == 0:
                 st.warning('No face detected. Please position your face clearly in the camera.')
