@@ -206,4 +206,5 @@ python -m unittest discover -s tests
 - **Face not recognized:** improve lighting, face position, image quality, or add more registration samples.
 - **No face detected:** confirm the face is visible and not obstructed.
 - **Voice profile unavailable:** complete voice enrollment for the student before using voice attendance.
+- **Password reset is temporarily unavailable:** verify `SUPABASE_SERVICE_ROLE_KEY` is configured and run the password-reset section of `supabase_migration.sql`; inspect the app logs for the database error code if it still fails.
 - **Password reset email not sent:** verify SMTP host, port, credentials, and `APP_BASE_URL`.

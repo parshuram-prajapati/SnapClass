@@ -1,42 +1,45 @@
 
 import os
 from pathlib import Path
+
 import streamlit as st
 from supabase import create_client, Client
 
 
 def get_secret(key: str, default: str = "") -> str:
-    """Retrieve secrets from Streamlit, local TOML, or environment."""
+    """Read secrets from Streamlit, local TOML, or environment."""
 
-    # 1. Streamlit secrets
+    # Streamlit Cloud secrets
     try:
-        if key in st.secrets:
-            return str(st.secrets[key])
+        value = st.secrets.get(key)
+        if value:
+            return str(value).strip()
     except Exception:
         pass
 
-    # 2. Local secrets.toml
+    # Local secrets.toml
     try:
         import tomllib
 
-        local_secrets = (
-            Path(__file__).resolve().parent.parent.parent
+        secrets_path = (
+            Path(__file__).resolve().parents[2]
             / ".streamlit"
             / "secrets.toml"
         )
 
-        if local_secrets.exists():
-            with open(local_secrets, "rb") as f:
-                data = tomllib.load(f)
+        if secrets_path.exists():
+            with open(secrets_path, "rb") as file:
+                data = tomllib.load(file)
 
-            if key in data:
-                return str(data[key])
+            value = data.get(key)
+            if value:
+                return str(value).strip()
 
     except Exception:
         pass
 
-    # 3. Environment variables
-    return os.environ.get(key, default)
+    # Environment variables
+    return os.environ.get(key, default).strip()
 
 
 SUPABASE_URL = get_secret("SUPABASE_URL")
@@ -46,20 +49,34 @@ SUPABASE_SERVICE_ROLE_KEY = get_secret(
     "SUPABASE_SERVICE_ROLE_KEY"
 )
 
-if not SUPABASE_URL or not SUPABASE_KEY:
-    raise RuntimeError("Supabase URL or API key is missing.")
 
-# Existing client: preserve existing application functionality.
+# Validate normal Supabase configuration
+if not SUPABASE_URL or not SUPABASE_KEY:
+    raise RuntimeError(
+        "SUPABASE_URL or SUPABASE_KEY is missing. "
+        "Check your Streamlit secrets configuration."
+    )
+
+
+# Normal application client
 supabase: Client = create_client(
     SUPABASE_URL,
     SUPABASE_KEY
 )
 
-# Trusted server-side client: biometric database operations only.
+
+# Trusted server-side admin client
 supabase_admin: Client | None = None
 
 if SUPABASE_SERVICE_ROLE_KEY:
     supabase_admin = create_client(
         SUPABASE_URL,
         SUPABASE_SERVICE_ROLE_KEY
+    )
+else:
+    import logging
+
+    logging.warning(
+        "SUPABASE_SERVICE_ROLE_KEY is missing. "
+        "Admin operations and password reset will be unavailable."
     )

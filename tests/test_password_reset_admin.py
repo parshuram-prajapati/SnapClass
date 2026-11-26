@@ -36,6 +36,27 @@ class FakeAdminClient:
         return self.call
 
 
+class FakeDatabaseError(Exception):
+    code = "42P01"
+
+
+class FakeFailingInsert:
+    def execute(self):
+        raise FakeDatabaseError("details that must not be logged")
+
+
+class FakePasswordResetTable:
+    def insert(self, _data):
+        return FakeFailingInsert()
+
+
+class FakeInsertClient:
+    def table(self, name):
+        if name != "password_resets":
+            raise AssertionError("Unexpected table access")
+        return FakePasswordResetTable()
+
+
 class PasswordResetAdminTests(unittest.TestCase):
     def test_password_reset_uses_atomic_server_side_rpc(self):
         admin_client = FakeAdminClient()
@@ -70,6 +91,36 @@ class PasswordResetAdminTests(unittest.TestCase):
         with patch.object(database, "supabase_admin", None):
             with self.assertRaisesRegex(RuntimeError, "service role"):
                 database._get_password_reset_client()
+
+    def test_password_reset_logs_safe_database_code_when_token_insert_fails(self):
+        with (
+            patch.object(database, "supabase_admin", FakeInsertClient()),
+            patch.object(
+                database,
+                "find_teacher_by_email_or_username",
+                return_value={
+                    "teacher_id": 17,
+                    "email": "teacher@example.com",
+                    "name": "Teacher"
+                }
+            ),
+            patch.object(database.logger, "error") as log_error
+        ):
+            success, message, raw_token, _email_status = (
+                database.request_password_reset("teacher@example.com")
+            )
+
+        self.assertFalse(success)
+        self.assertEqual(
+            message,
+            "Password reset is temporarily unavailable."
+        )
+        self.assertIsNone(raw_token)
+        self.assertEqual(log_error.call_args.args[2], "42P01")
+        self.assertNotIn(
+            "details that must not be logged",
+            str(log_error.call_args)
+        )
 
 
 if __name__ == "__main__":

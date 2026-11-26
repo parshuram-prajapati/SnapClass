@@ -42,77 +42,124 @@ def validate_password_strength(pwd: str) -> Tuple[bool, str]:
     return True, ""
 
 
+def _get_teacher_admin_client():
+    """Return the trusted server-side Supabase client for teacher auth operations."""
+    if supabase_admin is None:
+        raise RuntimeError(
+            "Supabase admin client is not configured. Check the server-side service-role secret."
+        )
+    return supabase_admin
+
+
 def check_teacher_exists(username: str) -> bool:
-    # Check for unique username, returns false when username is already taken
-    response = supabase.table("teachers").select("username").eq("username", username).execute()
-    return len(response.data) > 0 
+    """Check for an existing username using the server-side client (RLS-safe)."""
+    if not username or not username.strip():
+        return False
+
+    response = (
+        _get_teacher_admin_client()
+        .table("teachers")
+        .select("teacher_id")
+        .ilike("username", username.strip())
+        .limit(1)
+        .execute()
+    )
+    return bool(response.data)
 
 
 def find_teacher_by_email_or_username(identifier: str) -> Optional[Dict[str, Any]]:
-    """Looks up teacher by email or username (case-insensitive and whitespace-tolerant)."""
-    if not identifier:
+    """Find a teacher by email or username using the trusted server-side client."""
+    if not identifier or not identifier.strip():
         return None
+
     ident = identifier.strip()
-    if not ident:
-        return None
+    client = _get_teacher_admin_client()
 
-    # 1. Lookup by email if '@' is in identifier
+    # Search email first when the identifier looks like an email address.
     if "@" in ident:
-        try:
-            res = supabase.table("teachers").select("*").ilike("email", ident).execute()
-            if res.data:
-                return res.data[0]
-        except Exception:
-            pass
+        response = (
+            client.table("teachers")
+            .select("*")
+            .ilike("email", ident)
+            .limit(1)
+            .execute()
+        )
+        if response.data:
+            return response.data[0]
 
-    # 2. Case-insensitive lookup by username
-    try:
-        res = supabase.table("teachers").select("*").ilike("username", ident).execute()
-        if res.data:
-            return res.data[0]
-    except Exception:
-        pass
-
-    # 3. Fallback check across all teachers (handles trimmed/lower variations)
-    try:
-        res = supabase.table("teachers").select("*").execute()
-        for t in res.data or []:
-            if t.get("email") and t["email"].strip().lower() == ident.lower():
-                return t
-            if t.get("username") and t["username"].strip().lower() == ident.lower():
-                return t
-    except Exception:
-        pass
+    # Otherwise, or if no email matched, search by username.
+    response = (
+        client.table("teachers")
+        .select("*")
+        .ilike("username", ident)
+        .limit(1)
+        .execute()
+    )
+    if response.data:
+        return response.data[0]
 
     return None
 
 
-def create_teacher(username: str, password: str, name: str, email: Optional[str] = None):
-    data = { "username" : username.strip(), "password": hash_pass(password.strip()), "name": name.strip()}
+def create_teacher(
+    username: str,
+    password: str,
+    name: str,
+    email: Optional[str] = None
+):
+    """Create a teacher account using the trusted server-side client."""
+    if not username or not username.strip():
+        raise ValueError("Username is required.")
+    if not password or not password.strip():
+        raise ValueError("Password is required.")
+    if not name or not name.strip():
+        raise ValueError("Teacher name is required.")
+
+    data = {
+        "username": username.strip(),
+        "password": hash_pass(password.strip()),
+        "name": name.strip(),
+    }
     if email and email.strip():
         data["email"] = email.strip()
 
+    client = _get_teacher_admin_client()
     try:
-        response = supabase.table("teachers").insert(data).execute()
+        response = client.table("teachers").insert(data).execute()
         return response.data
-    except Exception as e:
-        # If insertion failed because email column does not exist yet, retry without email
-        if email and "email" in str(e).lower():
-            del data["email"]
-            response = supabase.table("teachers").insert(data).execute()
+    except Exception as exc:
+        # Keep compatibility with deployments where the optional email column
+        # has not yet been added. Do not hide unrelated database errors.
+        if "email" in data and "email" in str(exc).lower():
+            data_without_email = {key: value for key, value in data.items() if key != "email"}
+            response = client.table("teachers").insert(data_without_email).execute()
             return response.data
-        raise e
+        raise
 
 
-def teacher_login(username_or_email, password):
-    if not username_or_email or not password:
+def teacher_login(username_or_email: str, password: str) -> Optional[Dict[str, Any]]:
+    """Authenticate a teacher and return profile data without the password hash."""
+    if not username_or_email or not username_or_email.strip() or not password:
         return None
-    teacher = find_teacher_by_email_or_username(username_or_email)
-    if teacher:
-        stored_hash = teacher.get('password', '')
-        if check_pass(password, stored_hash) or check_pass(password.strip(), stored_hash):
-            return teacher
-    return None
+
+    try:
+        teacher = find_teacher_by_email_or_username(username_or_email)
+        if not teacher:
+            logger.warning("Teacher login failed: account not found.")
+            return None
+
+        stored_hash = teacher.get("password") or ""
+        # Registration stores password.strip(), so verify using the same rule.
+        if not check_pass(password.strip(), stored_hash):
+            logger.warning("Teacher login failed: password verification failed.")
+            return None
+
+        # Never put the password hash into Streamlit session state.
+        return {key: value for key, value in teacher.items() if key != "password"}
+
+    except Exception:
+        logger.exception("Teacher authentication database operation failed.")
+        return None
 
 
 # =============================================================================
@@ -175,7 +222,18 @@ def request_password_reset(identifier: str, expiry_minutes: int = 15, send_email
             "used": False
         }).execute()
     except Exception as exc:
-        logger.error("Could not save password reset token (%s)", type(exc).__name__)
+        database_code = getattr(exc, "code", None)
+        if not isinstance(database_code, str) or not re.fullmatch(
+            r"[A-Za-z0-9_-]{1,32}",
+            database_code
+        ):
+            database_code = "unavailable"
+        logger.error(
+            "Could not save password reset token "
+            "(exception=%s, database_code=%s)",
+            type(exc).__name__,
+            database_code
+        )
         return False, "Password reset is temporarily unavailable.", None, email_status
 
     # Attempt to send email via SMTP if configured and target_email exists
@@ -310,20 +368,36 @@ def create_subject(subject_code, name, section, teacher_id):
     response = supabase.table("subjects").insert(data).execute()
     return response.data
 
-def get_teacher_subjects(teacher_id):
-    response = supabase.table('subjects').select("*, subject_students(count), attendance_logs(timestamp)").eq("teacher_id", teacher_id).execute()
-    subjects = response.data
 
+def get_teacher_subjects(teacher_id):
+    if supabase_admin is None:
+        raise RuntimeError("Supabase admin client is not configured.")
+
+    response = (
+        supabase_admin.table("subjects")
+        .select("*, subject_students(count), attendance_logs(timestamp)")
+        .eq("teacher_id", teacher_id)
+        .execute()
+    )
+
+    subjects = response.data or []
 
     for sub in subjects:
-        sub['total_students'] = sub.get("subject_students", [{}])[0].get('count', 0) if sub.get('subject_students') else 0
-        attendance = sub.get('attendance_logs', [])
-        unique_sessions = len(set(log['timestamp'] for log in attendance))
-        sub['total_classes'] = unique_sessions
+        sub["total_students"] = (
+            sub.get("subject_students", [{}])[0].get("count", 0)
+            if sub.get("subject_students")
+            else 0
+        )
 
+        attendance = sub.get("attendance_logs", [])
+        unique_sessions = len(
+            set(log["timestamp"] for log in attendance)
+        )
 
-        sub.pop('subject_student', None)
-        sub.pop('attendance_logs', None)
+        sub["total_classes"] = unique_sessions
+
+        sub.pop("subject_students", None)
+        sub.pop("attendance_logs", None)
 
     return subjects
 
@@ -354,9 +428,19 @@ def create_attendance(logs):
     response = supabase.table('attendance_logs').insert(logs).execute()
     return response.data
 
+
 def get_attendance_for_teacher(teacher_id):
-    response = supabase.table('attendance_logs').select("*, subjects!inner(*), students(*)").eq('subjects.teacher_id', teacher_id).execute()
-    return response.data
+    if supabase_admin is None:
+        raise RuntimeError("Supabase admin client is not configured.")
+
+    response = (
+        supabase_admin.table("attendance_logs")
+        .select("*, subjects!inner(*), students(*)")
+        .eq("subjects.teacher_id", teacher_id)
+        .execute()
+    )
+
+    return response.data or []
 
 
 
