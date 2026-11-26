@@ -1,5 +1,5 @@
 -- =============================================================================
--- SnapClass AI - Supabase Database Migration
+-- Smart Attendance App - Supabase Database Migration
 -- Feature: Teacher Email & Password Reset Functionality
 -- =============================================================================
 

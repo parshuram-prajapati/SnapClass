@@ -24,7 +24,7 @@ def send_password_reset_email(to_email: str, reset_token: str, recipient_name: s
     - SMTP_PORT (default: 587)
     - SMTP_USER / SMTP_EMAIL
     - SMTP_PASSWORD / SMTP_PASS
-    - SMTP_SENDER_NAME (default: SnapClass AI)
+    - SMTP_SENDER_NAME (default: Smart Attendance App)
     - APP_BASE_URL (default: http://localhost:8501)
     
     Returns: (success: bool, message: str)
@@ -39,19 +39,19 @@ def send_password_reset_email(to_email: str, reset_token: str, recipient_name: s
     smtp_user = get_secret("SMTP_USER", get_secret("SMTP_EMAIL", "")).strip()
     smtp_pass = get_secret("SMTP_PASSWORD", get_secret("SMTP_PASS", "")).strip()
     app_base_url = get_secret("APP_BASE_URL", "http://localhost:8501").rstrip("/")
-    sender_name = get_secret("SMTP_SENDER_NAME", "SnapClass AI")
+    sender_name = get_secret("SMTP_SENDER_NAME", "Smart Attendance App")
 
     if not smtp_user or not smtp_pass:
         return False, "SMTP credentials are not configured in .streamlit/secrets.toml."
 
     reset_url = f"{app_base_url}/?reset_token={reset_token}"
 
-    subject = "SnapClass AI - Password Reset Request"
+    subject = "Smart Attendance App - Password Reset Request"
 
     # Plain text version
     text_content = f"""Hello {recipient_name},
 
-We received a request to reset the password for your SnapClass AI account.
+We received a request to reset the password for your Smart Attendance App account.
 
 To reset your password, visit the following link (valid for 15 minutes):
 {reset_url}
@@ -59,22 +59,22 @@ To reset your password, visit the following link (valid for 15 minutes):
 If you did not request this password reset, please ignore this email. Your account remains secure.
 
 Best regards,
-The SnapClass AI Team
+The Smart Attendance App Team
 """
 
-    # Modern, responsive HTML email version matching SnapClass styling
+    # Modern, responsive HTML email version matching app styling
     html_content = f"""<!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8">
-  <title>Reset Your Password - SnapClass AI</title>
+  <title>Reset Your Password - Smart Attendance App</title>
 </head>
 <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #F4F6FB; margin: 0; padding: 30px;">
   <table width="100%" border="0" cellspacing="0" cellpadding="0" style="max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 16px; overflow: hidden; box-shadow: 0 4px 20px rgba(88, 101, 242, 0.15);">
     <!-- Header -->
     <tr>
       <td style="background-color: #5865F2; padding: 35px 30px; text-align: center;">
-        <h1 style="color: #ffffff; margin: 0; font-size: 28px; letter-spacing: 1px; font-weight: 800;">SNAPCLASS AI</h1>
+        <h1 style="color: #ffffff; margin: 0; font-size: 28px; letter-spacing: 1px; font-weight: 800;">SMART ATTENDANCE APP</h1>
         <p style="color: #E0E3FF; margin: 6px 0 0; font-size: 14px;">Smart Attendance Management System</p>
       </td>
     </tr>
@@ -104,7 +104,7 @@ The SnapClass AI Team
     <!-- Footer -->
     <tr>
       <td style="background-color: #F9FAFB; padding: 20px 35px; text-align: center; color: #9CA3AF; font-size: 12px;">
-        &copy; SnapClass AI &bull; Smart AI-Powered Attendance
+        &copy; Smart Attendance App &bull; Smart AI-Powered Attendance
       </td>
     </tr>
   </table>

@@ -1,133 +1,131 @@
 
-
 import gc
 import logging
-import dlib
 import numpy as np
-import face_recognition_models
-from sklearn.svm import SVC
 import streamlit as st
 
-from src.database.db import get_all_students
+from src.pipelines.face_detector import detect_faces
+from src.pipelines.face_embedder import get_face_embedding
+from src.database.db import get_all_face_embeddings
 
 logger = logging.getLogger(__name__)
 
-# Configurable default face matching threshold (Euclidean distance on 128D embeddings)
-# 0.55 balances matching registered students with rejecting unknown faces
-DEFAULT_CONFIDENCE_THRESHOLD = 0.55
+# Initial testing threshold. Calibrate using your own face samples.
+DEFAULT_CONFIDENCE_THRESHOLD = 0.45
 
 
 @st.cache_resource
-def load_dlib_models():
-    detector = dlib.get_frontal_face_detector() 
+def get_face_database():
+    """
+    Load registered SFace embeddings from the database.
+    Old Dlib embeddings are not used here.
+    """
+    try:
+        records = get_all_face_embeddings()
+    except Exception:
+        logger.exception("Failed to load SFace database")
+        return {"X": [], "y": []}
 
-    sp = dlib.shape_predictor(
-        face_recognition_models.pose_predictor_model_location()
+    embeddings = []
+    student_ids = []
+
+    for record in records or []:
+        try:
+            student_id = int(record["student_id"])
+
+            embedding = np.asarray(
+                record["embedding"],
+                dtype=np.float32
+            ).reshape(-1)
+
+            if embedding.shape != (128,):
+                logger.warning(
+                    "Invalid embedding dimension for student %s",
+                    student_id
+                )
+                continue
+
+            norm = np.linalg.norm(embedding)
+
+            if not np.isfinite(norm) or norm == 0:
+                continue
+
+            embeddings.append(embedding / norm)
+            student_ids.append(student_id)
+
+        except (KeyError, TypeError, ValueError):
+            logger.warning("Skipping invalid SFace database record")
+
+    logger.info(
+        "Loaded %d SFace embeddings for %d students",
+        len(embeddings),
+        len(set(student_ids))
     )
 
-    facerec = dlib.face_recognition_model_v1(
-        face_recognition_models.face_recognition_model_location()
-    )
-
-    return detector, sp, facerec
+    return {
+        "X": embeddings,
+        "y": student_ids
+    }
 
 
 def get_face_embeddings(image_np: np.ndarray) -> list:
     """
-    Extracts 128-dimensional face embeddings for all faces detected in the image.
-    - Optimized for large group photographs and high resolutions.
-    - Uses adaptive upsampling (avoids memory-exploding upsampling on high-res images).
-    - Safely handles edge faces and bounding box errors without crashing.
+    Extract SFace embeddings for every face in an RGB image.
+
+    Maintains compatibility with the existing student registration screen.
+    Returns a list of normalized 128-dimensional embeddings.
     """
     if image_np is None or image_np.size == 0:
         return []
 
-    detector, sp, facerec = load_dlib_models()
-
-    h, w = image_np.shape[:2]
-    max_dim = max(h, w)
-
-    # Adaptive upsample:
-    # On images with max dimension > 1200, upsampling causes massive RAM spikes (OOM/crash).
-    # detector(..., 0) detects normal and group faces cleanly without RAM explosion.
-    # On smaller images (<= 1024px), upsample=1 helps detect smaller faces safely.
-    upsample = 1 if max_dim <= 1024 else 0
-
     try:
-        faces = detector(image_np, upsample)
-    except Exception as e:
-        logger.warning(f"dlib face detection error with upsample={upsample}: {e}")
-        try:
-            # Fallback with no upsampling
-            faces = detector(image_np, 0)
-        except Exception:
-            return []
+        faces = detect_faces(image_np)
+    except Exception:
+        logger.exception("YuNet detection failed during enrollment")
+        return []
 
-    # If 0 faces found on moderate-size image (between 1024 and 1600), try upsampling once as fallback
-    if len(faces) == 0 and 1024 < max_dim <= 1600:
-        try:
-            faces = detector(image_np, 1)
-        except Exception:
-            pass
-
-    encodings = []
+    embeddings = []
 
     for face in faces:
         try:
-            shape = sp(image_np, face)
-            # Compute 128D face descriptor (num_jitters=1 for performance and stability)
-            face_descriptor = facerec.compute_face_descriptor(image_np, shape, 1)
-            encodings.append(np.array(face_descriptor))
-        except Exception as e:
-            # Individual face failure (e.g. face near image boundary) should not crash the app
-            logger.debug(f"Failed to extract face descriptor for a bounding box: {e}")
-            continue
+            embedding = get_face_embedding(image_np, face)
 
-    return encodings
+            embedding = np.asarray(
+                embedding,
+                dtype=np.float32
+            ).reshape(-1)
 
+            if embedding.shape != (128,):
+                logger.warning("Invalid SFace embedding dimension")
+                continue
 
-@st.cache_resource
-def get_trained_model():
-    X = []
-    y = []
+            norm = np.linalg.norm(embedding)
 
-    try:
-        student_db = get_all_students()
-    except Exception as e:
-        logger.error(f"Failed to fetch students for model training: {e}")
-        student_db = None
+            if not np.isfinite(norm) or norm == 0:
+                continue
 
-    if not student_db:
-        return None
-    
-    for student in student_db:
-        embedding = student.get('face_embedding')
-        if embedding:
-            X.append(np.array(embedding))
-            y.append(student.get('student_id'))
+            embeddings.append(embedding / norm)
 
-    if len(X) == 0:
-        return None
-    
-    all_unique_students = list(set(y))
-    clf = None
+        except Exception:
+            logger.exception(
+                "Failed to extract an individual enrollment embedding"
+            )
 
-    # Train SVM classifier only if there are at least 2 distinct student classes
-    if len(all_unique_students) >= 2:
-        try:
-            clf = SVC(kernel='linear', probability=True, class_weight='balanced')
-            clf.fit(X, y)
-        except Exception as e:
-            logger.warning(f"SVM training skipped: {e}")
-            clf = None
-
-    return {'clf': clf, 'X': X, 'y': y}
+    return embeddings
 
 
 def train_classifier():
-    st.cache_resource.clear()
-    model_data = get_trained_model()
-    return bool(model_data)
+    """
+    Refresh the cached SFace database.
+
+    Retains the old function name for compatibility.
+    No SVM classifier is trained.
+    """
+    get_face_database.clear()
+
+    database = get_face_database()
+
+    return bool(database["X"])
 
 
 def predict_attendance(
@@ -135,67 +133,88 @@ def predict_attendance(
     confidence_threshold: float = DEFAULT_CONFIDENCE_THRESHOLD
 ):
     """
-    Scans a classroom photo and predicts present students:
-    - Extracts face encodings safely for all detected people.
-    - Matches detected faces against enrolled student embeddings.
-    - Strictly rejects unknown people (does NOT mark unknown people as students).
-    - Preserves existing matching logic and IDs.
-    Returns: (detected_student: dict, all_students: list, num_faces_detected: int)
+    Recognize multiple students in an RGB classroom image.
+
+    Returns:
+        detected_student: {student_id: True}
+        all_students: list of registered student IDs
+        num_faces_detected: number of detected faces
     """
-    encodings = get_face_embeddings(class_image_np)
     detected_student = {}
 
-    if not encodings:
+    if class_image_np is None or class_image_np.size == 0:
         return detected_student, [], 0
 
-    model_data = get_trained_model()
+    try:
+        faces = detect_faces(class_image_np)
 
-    if not model_data:
-        return detected_student, [], len(encodings)
-    
-    clf = model_data.get('clf')
-    X_train = model_data.get('X', [])
-    y_train = model_data.get('y', [])
+    except Exception:
+        logger.exception("YuNet face detection failed")
+        return detected_student, [], 0
 
-    if not X_train or not y_train:
-        return detected_student, [], len(encodings)
+    num_faces = len(faces)
 
-    all_students = sorted(list(set(y_train)))
+    if num_faces == 0:
+        return detected_student, [], 0
 
-    for encoding in encodings:
-        # 1. Direct Euclidean distance verification against all registered embeddings
-        best_id = None
-        min_distance = float('inf')
+    database = get_face_database()
 
-        # Check candidate using SVM if available
-        if clf is not None and len(all_students) >= 2:
-            try:
-                svm_pred_id = int(clf.predict([encoding])[0])
-                # Check distance to that student's registered embeddings
-                for emb, sid in zip(X_train, y_train):
-                    if sid == svm_pred_id:
-                        dist = float(np.linalg.norm(emb - encoding))
-                        if dist < min_distance:
-                            min_distance = dist
-                            best_id = sid
-            except Exception:
-                pass
+    X_train = database["X"]
+    y_train = database["y"]
 
-        # Also check all embeddings to ensure global minimum distance
-        for emb, sid in zip(X_train, y_train):
-            dist = float(np.linalg.norm(emb - encoding))
-            if dist < min_distance:
-                min_distance = dist
-                best_id = sid
+    all_students = sorted(set(y_train))
 
-        # Strict thresholding: Only accept if resemblance is within confidence threshold
-        # Rejects unknown faces so random people are never marked as registered students
-        if best_id is not None and min_distance <= confidence_threshold:
-            detected_student[int(best_id)] = True
+    if not X_train:
+        logger.warning("No registered SFace embeddings found")
+        return detected_student, all_students, num_faces
 
-    # Memory cleanup
+    for face in faces:
+        try:
+            embedding = get_face_embedding(
+                class_image_np,
+                face
+            )
+
+            embedding = np.asarray(
+                embedding,
+                dtype=np.float32
+            ).reshape(-1)
+
+            if embedding.shape != (128,):
+                continue
+
+            norm = np.linalg.norm(embedding)
+
+            if not np.isfinite(norm) or norm == 0:
+                continue
+
+            embedding = embedding / norm
+
+            # Compare against every registered SFace embedding.
+            similarities = np.asarray(
+                [
+                    np.dot(embedding, registered)
+                    for registered in X_train
+                ],
+                dtype=np.float32
+            )
+
+            best_index = int(np.argmax(similarities))
+            best_similarity = float(similarities[best_index])
+
+            # Accept only matches above the configured threshold.
+            if best_similarity >= confidence_threshold:
+                student_id = int(y_train[best_index])
+
+                # Prevent duplicate recognition in the same image.
+                detected_student[student_id] = True
+
+        except Exception:
+            logger.exception(
+                "Failed to recognize an individual classroom face"
+            )
+            continue
+
     gc.collect()
 
-    return detected_student, all_students, len(encodings)
-
-
+    return detected_student, all_students, num_faces

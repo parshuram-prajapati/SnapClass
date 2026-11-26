@@ -1,4 +1,4 @@
-from src.database.config import supabase
+from src.database.config import supabase, supabase_admin
 import bcrypt
 import hashlib
 import secrets
@@ -336,3 +336,175 @@ def get_attendance_for_teacher(teacher_id):
     response = supabase.table('attendance_logs').select("*, subjects!inner(*), students(*)").eq('subjects.teacher_id', teacher_id).execute()
     return response.data
 
+
+
+# =============================================================================
+# SFace FACE EMBEDDING DATABASE FUNCTIONS
+# =============================================================================
+def get_biometric_client():
+    if supabase_admin is None:
+        raise RuntimeError(
+            "SUPABASE_SERVICE_ROLE_KEY is not configured. "
+            "Biometric database operations require a trusted "
+            "server-side Supabase client."
+        )
+
+    return supabase_admin
+
+import math
+
+
+def _validate_face_embedding(embedding):
+    """
+    Validate and convert an SFace embedding into a JSON-compatible list.
+    SFace embeddings must contain exactly 128 finite values.
+    """
+
+    if hasattr(embedding, "tolist"):
+        embedding = embedding.tolist()
+
+    if not isinstance(embedding, (list, tuple)):
+        raise ValueError("Embedding must be a list or array.")
+
+    if len(embedding) != 128:
+        raise ValueError(
+            f"Expected 128 embedding values, received {len(embedding)}."
+        )
+
+    try:
+        values = [float(value) for value in embedding]
+    except (TypeError, ValueError):
+        raise ValueError("Embedding contains invalid values.")
+
+    if not all(math.isfinite(value) for value in values):
+        raise ValueError("Embedding contains non-finite values.")
+
+    return values
+
+
+def save_face_embedding(student_id, embedding):
+    """
+    Save one SFace embedding for a student.
+    Does not modify the existing students.face_embedding column.
+    """
+
+    embedding_values = _validate_face_embedding(embedding)
+
+    data = {
+        "student_id": int(student_id),
+        "embedding": embedding_values
+    }
+
+    response = (
+        get_biometric_client().table("student_face_embeddings")
+        .insert(data)
+        .execute()
+    )
+
+    return response.data
+
+
+
+def save_face_embeddings(student_id, embeddings):
+    if not embeddings:
+        raise ValueError("No face embeddings provided.")
+
+    data = [
+        {
+            "student_id": int(student_id),
+            "embedding": _validate_face_embedding(embedding)
+        }
+        for embedding in embeddings
+    ]
+
+    response = (
+        get_biometric_client()
+        .table("student_face_embeddings")
+        .insert(data)
+        .execute()
+    )
+
+    return response.data
+
+
+def get_student_face_embeddings(student_id):
+    response = (
+        get_biometric_client()
+        .table("student_face_embeddings")
+        .select("id, student_id, embedding, created_at")
+        .eq("student_id", int(student_id))
+        .execute()
+    )
+
+    return response.data or []
+
+
+def get_all_face_embeddings():
+    all_embeddings = []
+    page_size = 1000
+    start = 0
+
+    while True:
+        response = (
+            get_biometric_client()
+            .table("student_face_embeddings")
+            .select("id, student_id, embedding, created_at")
+            .order("id")
+            .range(start, start + page_size - 1)
+            .execute()
+        )
+
+        rows = response.data or []
+        all_embeddings.extend(rows)
+
+        if len(rows) < page_size:
+            break
+
+        start += page_size
+
+    return all_embeddings
+
+
+def get_student_face_embeddings(student_id):
+    """
+    Retrieve all SFace embeddings belonging to one student.
+    """
+
+    response = (
+       get_biometric_client().table("student_face_embeddings")
+        .select("id, student_id, embedding, created_at")
+        .eq("student_id", int(student_id))
+        .execute()
+    )
+
+    return response.data or []
+
+
+def get_all_face_embeddings():
+    """
+    Retrieve all SFace embeddings for classifier training.
+    Uses pagination to avoid the default 1000-row response limit.
+    """
+
+    all_embeddings = []
+    page_size = 1000
+    start = 0
+
+    while True:
+        response = (
+            get_biometric_client().table("student_face_embeddings")
+            .select("id, student_id, embedding, created_at")
+            .order("id")
+            .range(start, start + page_size - 1)
+            .execute()
+        )
+
+        rows = response.data or []
+        all_embeddings.extend(rows)
+
+        if len(rows) < page_size:
+            break
+
+        start += page_size
+
+    return all_embeddings

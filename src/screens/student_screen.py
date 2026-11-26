@@ -1,4 +1,8 @@
 import streamlit as st
+from src.pipelines.face_detector import detect_faces
+from src.pipelines.face_embedder import get_face_embedding
+
+from src.database.db import save_face_embeddings
 
 from src.ui.base_layout import style_background_dashboard, style_base_layout
 
@@ -6,7 +10,11 @@ from src.components.header import header_dashboard
 from src.components.footer import footer_dashboard
 from PIL import Image
 import numpy as np
-from src.pipelines.face_pipeline import predict_attendance, get_face_embeddings, train_classifier
+from src.pipelines.face_pipeline import (
+    predict_attendance,
+    get_face_embeddings,
+    train_classifier
+)
 from src.pipelines.voice_pipeline import get_voice_embedding
 from src.database.db import get_all_students, create_student, get_student_subjects, get_student_attendance, unenroll_student_to_subject
 import time
@@ -69,7 +77,7 @@ def student_dashboard():
         def unenroll_button():
                 if st.button("Unenroll from tihs course", type='tertiary', width='stretch', icon=':material/delete_forever:'):
                     unenroll_student_to_subject(student_id, sid)
-                    st.toast(f'Unenrolled from {sub['name']} successfully!')
+                    st.toast(f"Unenrolled from {sub['name']} successfully!")
                     st.rerun()
 
         with cols[i % 2]:
@@ -166,60 +174,229 @@ def student_screen_login():
                         st.rerun()
 
 
+
+
 def student_screen_register():
     st.header('Register New Student Profile', text_alignment='center')
     st.space()
 
     with st.container(border=True):
-        new_name = st.text_input("Enter your full name", placeholder='E.g. Hamza Rizvi', key='reg_student_name')
 
-        st.caption("Capture a clear frontal photo of your face for FaceID recognition:")
-        reg_photo = st.camera_input("Take registration photo", key="reg_student_cam")
+        new_name = st.text_input(
+            "Enter your full name",
+            placeholder="E.g. Hamza Rizvi",
+            key="reg_student_name"
+        )
 
-        st.subheader('Optional : Voice Enrollment')
-        st.caption("Enroll your voice for voice-assisted attendance:")
+        st.subheader("FaceID Enrollment")
+        st.caption(
+            "Capture exactly 4 clear photos of the same student. "
+            "Use different angles and lighting conditions."
+        )
+
+        # Four camera capture fields
+        photo_labels = [
+            "Photo 1 - Front face",
+            "Photo 2 - Slightly left",
+            "Photo 3 - Slightly right",
+            "Photo 4 - Different angle"
+        ]
+
+        captured_photos = []
+
+        for row in range(2):
+            cols = st.columns(2)
+
+            for col_index in range(2):
+                photo_index = row * 2 + col_index
+
+                with cols[col_index]:
+                    st.markdown(f"**{photo_labels[photo_index]}**")
+
+                    photo = st.camera_input(
+                        f"Capture photo {photo_index + 1}",
+                        key=f"reg_camera_{photo_index + 1}"
+                    )
+
+                    captured_photos.append(photo)
+
+                    if photo:
+                        st.success("Photo captured")
+
+        st.caption("All four photos must contain exactly one face.")
+
+        st.divider()
+
+        # Optional voice enrollment
+        st.subheader("Optional: Voice Enrollment")
+        st.caption("Enroll your voice for voice-assisted attendance.")
 
         audio_data = None
+
         try:
-            audio_data = st.audio_input('Record a short phrase (e.g. "I am present, my name is...")', key='reg_student_voice')
+            audio_data = st.audio_input(
+                'Record a short phrase (e.g. "I am present, my name is...")',
+                key="reg_student_voice"
+            )
         except Exception:
-            st.error('Microphone access failed!')
+            st.error("Microphone access failed!")
 
         st.divider()
 
         btn_c1, btn_c2 = st.columns(2)
 
         with btn_c1:
-            if st.button('Create Account', type='primary', width='stretch', key='btn_submit_student_reg'):
-                if not new_name.strip():
-                    st.warning('Please enter your full name!')
-                elif not reg_photo:
-                    st.warning('Please take a photo of your face to complete registration!')
-                else:
-                    with st.spinner('Creating your facial profile...'):
-                        img = np.array(Image.open(reg_photo))
-                        encodings = get_face_embeddings(img)
-                        if encodings:
-                            face_emb = encodings[0].tolist()
-
-                            voice_emb = None
-                            if audio_data:
-                                voice_emb = get_voice_embedding(audio_data.read())
-
-                            response_data = create_student(new_name.strip(), face_embedding=face_emb, voice_embedding=voice_emb)
-
-                            if response_data:
-                                train_classifier()
-                                st.session_state.is_logged_in = True
-                                st.session_state.user_role = 'student'
-                                st.session_state.student_data = response_data[0]
-                                st.toast(f'Profile Created! Hi {new_name}!')
-                                time.sleep(1)
-                                st.rerun()
-                        else:
-                            st.error('Could not capture your facial features. Please ensure your face is well lit and centered.')
+            submit = st.button(
+                "Create Account",
+                type="primary",
+                width="stretch",
+                key="btn_submit_student_reg"
+            )
 
         with btn_c2:
-            if st.button('Already Registered? Login Instead', width='stretch', key='btn_back_to_login_tab'):
-                st.session_state.student_mode = 'login'
-                st.rerun()
+            back = st.button(
+                "Already Registered? Login Instead",
+                width="stretch",
+                key="btn_back_to_login_tab"
+            )
+
+        if back:
+            st.session_state.student_mode = "login"
+            st.rerun()
+
+        if submit:
+
+            if not new_name.strip():
+                st.warning("Please enter your full name.")
+
+            elif any(photo is None for photo in captured_photos):
+                st.warning("Please capture all 4 face photos.")
+
+            else:
+                embeddings = []
+                rejected_photos = []
+
+                with st.spinner("Processing all 4 photos with YuNet and SFace..."):
+
+                    for index, photo in enumerate(captured_photos, start=1):
+
+                        try:
+                            img = np.array(
+                                Image.open(photo).convert("RGB")
+                            )
+
+                            # Detect faces
+                            faces = detect_faces(img)
+
+                            if len(faces) == 0:
+                                rejected_photos.append(
+                                    f"Photo {index}: No face detected."
+                                )
+                                continue
+
+                            if len(faces) > 1:
+                                rejected_photos.append(
+                                    f"Photo {index}: Multiple faces detected."
+                                )
+                                continue
+
+                            # Generate SFace embedding
+                            embedding = get_face_embedding(
+                                img,
+                                faces[0]
+                            )
+
+                            embedding = np.asarray(
+                                embedding,
+                                dtype=np.float32
+                            ).reshape(-1)
+
+                            if embedding.shape != (128,):
+                                rejected_photos.append(
+                                    f"Photo {index}: Invalid embedding."
+                                )
+                                continue
+
+                            norm = np.linalg.norm(embedding)
+
+                            if not np.isfinite(norm) or norm == 0:
+                                rejected_photos.append(
+                                    f"Photo {index}: Invalid face embedding."
+                                )
+                                continue
+
+                            embeddings.append(
+                                (embedding / norm).tolist()
+                            )
+
+                        except Exception as exc:
+                            rejected_photos.append(
+                                f"Photo {index}: Processing failed ({exc})"
+                            )
+
+                # Require all four valid photos
+                if len(embeddings) != 4:
+
+                    st.error(
+                        f"Only {len(embeddings)} of 4 photos were valid. "
+                        "Please capture all four photos again."
+                    )
+
+                    for reason in rejected_photos:
+                        st.warning(reason)
+
+                else:
+
+                    try:
+                        # Optional voice embedding
+                        voice_emb = None
+
+                        if audio_data:
+                            voice_emb = get_voice_embedding(
+                                audio_data.getvalue()
+                            )
+
+                        # Create student account
+                        response_data = create_student(
+                            new_name.strip(),
+                            face_embedding=None,
+                            voice_embedding=voice_emb
+                        )
+
+                        if not response_data:
+                            st.error("Student account creation failed.")
+
+                        else:
+                            student = response_data[0]
+                            student_id = student["student_id"]
+
+                            # Save all four SFace embeddings
+                            save_face_embeddings(
+                                student_id,
+                                embeddings
+                            )
+
+                            # Refresh recognition database
+                            train_classifier()
+
+                            st.success(
+                                "Student registered successfully! "
+                                "All 4 SFace embeddings saved."
+                            )
+
+                            st.session_state.is_logged_in = True
+                            st.session_state.user_role = "student"
+                            st.session_state.student_data = student
+
+                            st.toast(
+                                f"Profile created! Welcome {new_name}!"
+                            )
+
+                            time.sleep(1)
+                            st.rerun()
+
+                    except Exception as exc:
+                        st.error(
+                            "Registration could not be completed. "
+                            f"Error: {exc}"
+                        )
