@@ -9,8 +9,8 @@ fake_config = types.ModuleType("src.database.config")
 fake_config.get_secret = lambda _key, default="": default
 fake_config.supabase = object()
 fake_config.supabase_admin = object()
-with patch.dict(sys.modules, {"src.database.config": fake_config}):
-    database = importlib.import_module("src.database.db")
+sys.modules["src.database.config"] = fake_config
+database = importlib.import_module("src.database.db")
 
 
 class FakeResponse:
@@ -55,6 +55,46 @@ class FakeInsertClient:
         if name != "password_resets":
             raise AssertionError("Unexpected table access")
         return FakePasswordResetTable()
+
+
+class FakeQuery:
+    def __init__(self, data):
+        self.data = data
+        self.filters = []
+
+    def select(self, columns):
+        self.columns = columns
+        return self
+
+    def eq(self, column, value):
+        self.filters.append((column, value))
+        return self
+
+    def limit(self, value):
+        self.limit_value = value
+        return self
+
+    def execute(self):
+        return types.SimpleNamespace(data=self.data)
+
+
+class FakeEnrollmentClient:
+    def __init__(self, owns_subject=True):
+        self.owns_subject = owns_subject
+        self.table_names = []
+
+    def table(self, name):
+        self.table_names.append(name)
+        if name == "subjects":
+            data = [{"subject_id": 8}] if self.owns_subject else []
+        elif name == "subject_students":
+            data = [{
+                "student_id": 17,
+                "students": {"student_id": 17, "name": "Student"}
+            }]
+        else:
+            raise AssertionError(f"Unexpected table: {name}")
+        return FakeQuery(data)
 
 
 class PasswordResetAdminTests(unittest.TestCase):
@@ -121,6 +161,25 @@ class PasswordResetAdminTests(unittest.TestCase):
             "details that must not be logged",
             str(log_error.call_args)
         )
+
+    def test_teacher_enrollment_lookup_uses_admin_and_checks_ownership(self):
+        admin_client = FakeEnrollmentClient()
+        with patch.object(database, "supabase_admin", admin_client):
+            students = database.get_enrolled_students_for_teacher(4, 8)
+
+        self.assertEqual(students[0]["student_id"], 17)
+        self.assertEqual(
+            admin_client.table_names,
+            ["subjects", "subject_students"]
+        )
+
+    def test_teacher_cannot_fetch_enrollments_for_another_teachers_subject(self):
+        admin_client = FakeEnrollmentClient(owns_subject=False)
+        with patch.object(database, "supabase_admin", admin_client):
+            with self.assertRaisesRegex(PermissionError, "not authorized"):
+                database.get_enrolled_students_for_teacher(4, 8)
+
+        self.assertEqual(admin_client.table_names, ["subjects"])
 
 
 if __name__ == "__main__":

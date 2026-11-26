@@ -77,6 +77,7 @@ class StudentRegistrationTests(unittest.TestCase):
 
         self.assertEqual(client.inserted["name"], "Parshuram Prajapati")
         self.assertEqual(client.inserted["usn"], "2BL24CI028")
+        self.assertNotIn("face_embedding", client.inserted)
         self.assertEqual(result[0]["student_id"], 7)
 
     def test_invalid_and_missing_usn_are_rejected(self):

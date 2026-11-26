@@ -1,6 +1,13 @@
 import logging
+import hmac
+import hashlib
+import secrets
+import re
+import math
+from datetime import datetime, timezone, timedelta
+from typing import Optional, Tuple, Dict, Any
 
-from src.database.config import get_secret, supabase, supabase_admin
+from src.database.config import get_secret, supabase_admin
 from src.services.student_registration import (
     DEFAULT_USN_PATTERN,
     create_student_record,
@@ -8,11 +15,6 @@ from src.services.student_registration import (
     student_usn_exists as check_student_usn_exists
 )
 import bcrypt
-import hashlib
-import secrets
-import re
-from datetime import datetime, timezone, timedelta
-from typing import Optional, Tuple, Dict, Any
 
 logger = logging.getLogger(__name__)
 USN_PATTERN = get_secret("USN_PATTERN", DEFAULT_USN_PATTERN)
@@ -150,9 +152,32 @@ def teacher_login(username_or_email: str, password: str) -> Optional[Dict[str, A
 
         stored_hash = teacher.get("password") or ""
         # Registration stores password.strip(), so verify using the same rule.
-        if not check_pass(password.strip(), stored_hash):
+        candidate = password.strip()
+        legacy_password_match = (
+            bool(stored_hash)
+            and not stored_hash.startswith("$2")
+            and hmac.compare_digest(
+                candidate.encode("utf-8"),
+                stored_hash.encode("utf-8")
+            )
+        )
+        if not check_pass(candidate, stored_hash) and not legacy_password_match:
             logger.warning("Teacher login failed: password verification failed.")
             return None
+
+        if legacy_password_match:
+            # Migrate legacy manually-created plaintext credentials on successful login.
+            response = (
+                _get_teacher_admin_client()
+                .table("teachers")
+                .update({"password": hash_pass(candidate)})
+                .eq("teacher_id", teacher["teacher_id"])
+                .select("teacher_id")
+                .execute()
+            )
+            if not response.data:
+                logger.error("Legacy teacher password upgrade did not update an account.")
+                return None
 
         # Never put the password hash into Streamlit session state.
         return {key: value for key, value in teacher.items() if key != "password"}
@@ -340,8 +365,13 @@ def reset_teacher_password(raw_token: str, new_password: str) -> Tuple[bool, str
 
 
 def get_all_students():
-    response = supabase.table('students').select("*").execute()
-    return response.data
+    response = (
+        _get_teacher_admin_client()
+        .table("students")
+        .select("student_id, name, usn")
+        .execute()
+    )
+    return response.data or []
 
 
 def normalize_student_usn(usn):
@@ -349,23 +379,46 @@ def normalize_student_usn(usn):
 
 
 def student_usn_exists(usn):
-    return check_student_usn_exists(supabase, usn, USN_PATTERN)
+    return check_student_usn_exists(
+        _get_teacher_admin_client(),
+        usn,
+        USN_PATTERN
+    )
 
 
-def create_student(new_name, usn, face_embedding=None, voice_embedding=None):
+def create_student(new_name, usn, voice_embedding=None):
     return create_student_record(
-        supabase,
+        _get_teacher_admin_client(),
         new_name,
         usn,
-        face_embedding=face_embedding,
         voice_embedding=voice_embedding,
         usn_pattern=USN_PATTERN
     )
 
 
 def create_subject(subject_code, name, section, teacher_id):
-    data = {"subject_code": subject_code, "name": name, "section": section, "teacher_id": teacher_id}
-    response = supabase.table("subjects").insert(data).execute()
+    values = (subject_code, name, section)
+    if any(not isinstance(value, str) or not value.strip() for value in values):
+        raise ValueError("Subject code, name, and section are required.")
+
+    client = _get_teacher_admin_client()
+    teacher = (
+        client.table("teachers")
+        .select("teacher_id")
+        .eq("teacher_id", teacher_id)
+        .limit(1)
+        .execute()
+    )
+    if not teacher.data:
+        raise ValueError("Teacher account was not found.")
+
+    data = {
+        "subject_code": subject_code.strip(),
+        "name": name.strip(),
+        "section": section.strip(),
+        "teacher_id": teacher_id
+    }
+    response = client.table("subjects").insert(data).execute()
     return response.data
 
 
@@ -402,30 +455,189 @@ def get_teacher_subjects(teacher_id):
     return subjects
 
 
-def  enroll_student_to_subject(student_id, subject_id):
-    data = {'student_id': student_id, "subject_id": subject_id}
-    response= supabase.table('subject_students').insert(data).execute()
-    return response.data
+def get_enrolled_students_for_teacher(teacher_id, subject_id):
+    client = _get_teacher_admin_client()
+
+    owned_subject = (
+        client.table("subjects")
+        .select("subject_id")
+        .eq("subject_id", subject_id)
+        .eq("teacher_id", teacher_id)
+        .limit(1)
+        .execute()
+    )
+    if not owned_subject.data:
+        raise PermissionError("Teacher is not authorized to access this subject.")
+
+    response = (
+        client.table("subject_students")
+        .select("student_id, students!inner(*)")
+        .eq("subject_id", subject_id)
+        .execute()
+    )
+    return response.data or []
 
 
-def  unenroll_student_to_subject(student_id, subject_id):
-    response= supabase.table('subject_students').delete().eq('student_id', student_id).eq('subject_id', subject_id).execute()
+def get_subject_by_code(subject_code):
+    if not subject_code or not subject_code.strip():
+        return None
+
+    response = (
+        _get_teacher_admin_client()
+        .table("subjects")
+        .select("subject_id, name, subject_code")
+        .eq("subject_code", subject_code.strip())
+        .limit(1)
+        .execute()
+    )
+    return response.data[0] if response.data else None
+
+
+def student_is_enrolled(student_id, subject_id):
+    response = (
+        _get_teacher_admin_client()
+        .table("subject_students")
+        .select("student_id")
+        .eq("student_id", student_id)
+        .eq("subject_id", subject_id)
+        .limit(1)
+        .execute()
+    )
+    return bool(response.data)
+
+
+def enroll_student_to_subject(student_id, subject_id):
+    client = _get_teacher_admin_client()
+
+    student = (
+        client.table("students")
+        .select("student_id")
+        .eq("student_id", student_id)
+        .limit(1)
+        .execute()
+    )
+    if not student.data:
+        raise ValueError("Student account was not found.")
+
+    subject = (
+        client.table("subjects")
+        .select("subject_id")
+        .eq("subject_id", subject_id)
+        .limit(1)
+        .execute()
+    )
+    if not subject.data:
+        raise ValueError("Subject was not found.")
+
+    enrollment = (
+        client.table("subject_students")
+        .select("student_id")
+        .eq("student_id", student_id)
+        .eq("subject_id", subject_id)
+        .limit(1)
+        .execute()
+    )
+    if enrollment.data:
+        return False
+
+    data = {"student_id": student_id, "subject_id": subject_id}
+    client.table("subject_students").insert(data).execute()
+    return True
+
+
+def unenroll_student_to_subject(student_id, subject_id):
+    response = (
+        _get_teacher_admin_client()
+        .table("subject_students")
+        .delete()
+        .eq("student_id", student_id)
+        .eq("subject_id", subject_id)
+        .execute()
+    )
     return response.data
 
 
 
 def get_student_subjects(student_id):
-    response = supabase.table('subject_students').select('*, subjects(*)').eq('student_id', student_id).execute()
-    return response.data
+    response = (
+        _get_teacher_admin_client()
+        .table("subject_students")
+        .select("*, subjects(*)")
+        .eq("student_id", student_id)
+        .execute()
+    )
+    return response.data or []
 
 
 def get_student_attendance(student_id):
-    response = supabase.table('attendance_logs').select('*, subjects(*)').eq('student_id', student_id).execute()
-    return response.data
+    response = (
+        _get_teacher_admin_client()
+        .table("attendance_logs")
+        .select("*, subjects(*)")
+        .eq("student_id", student_id)
+        .execute()
+    )
+    return response.data or []
 
 
-def create_attendance(logs):
-    response = supabase.table('attendance_logs').insert(logs).execute()
+def create_attendance(logs, teacher_id):
+    if not logs:
+        raise ValueError("Attendance records are required.")
+
+    subject_ids = {log.get("subject_id") for log in logs}
+    if len(subject_ids) != 1 or None in subject_ids:
+        raise ValueError("Attendance records must belong to one subject.")
+
+    student_ids = {log.get("student_id") for log in logs}
+    if None in student_ids:
+        raise ValueError("Every attendance record must include a student.")
+
+    subject_id = next(iter(subject_ids))
+    client = _get_teacher_admin_client()
+
+    owned_subject = (
+        client.table("subjects")
+        .select("subject_id")
+        .eq("subject_id", subject_id)
+        .eq("teacher_id", teacher_id)
+        .limit(1)
+        .execute()
+    )
+    if not owned_subject.data:
+        raise PermissionError("Teacher is not authorized to save attendance for this subject.")
+
+    enrolled = (
+        client.table("subject_students")
+        .select("student_id")
+        .eq("subject_id", subject_id)
+        .in_("student_id", list(student_ids))
+        .execute()
+    )
+    enrolled_ids = {row["student_id"] for row in enrolled.data or []}
+    if enrolled_ids != student_ids:
+        raise ValueError("Attendance includes students not enrolled in this subject.")
+
+    try:
+        response = (
+            client.table("attendance_logs")
+            .insert(logs)
+            .execute()
+        )
+    except Exception as exc:
+        database_code = getattr(exc, "code", None)
+        if not isinstance(database_code, str) or not re.fullmatch(
+            r"[A-Za-z0-9_-]{1,32}",
+            database_code
+        ):
+            database_code = "unavailable"
+        logger.error(
+            "Could not save attendance "
+            "(exception=%s, database_code=%s)",
+            type(exc).__name__,
+            database_code
+        )
+        raise
+
     return response.data
 
 
@@ -457,9 +669,6 @@ def get_biometric_client():
 
     return supabase_admin
 
-import math
-
-
 def _validate_face_embedding(embedding):
     """
     Validate and convert an SFace embedding into a JSON-compatible list.
@@ -490,8 +699,7 @@ def _validate_face_embedding(embedding):
 
 def save_face_embedding(student_id, embedding):
     """
-    Save one SFace embedding for a student.
-    Does not modify the existing students.face_embedding column.
+    Save one SFace embedding in the separate student_face_embeddings table.
     """
 
     embedding_values = _validate_face_embedding(embedding)

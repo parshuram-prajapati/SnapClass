@@ -5,7 +5,7 @@ import pandas as pd
 from datetime import datetime, timezone
 
 from src.pipelines.voice_pipeline import process_bulk_audio
-from src.database.config import supabase
+from src.database.db import get_enrolled_students_for_teacher
 from src.components.dialog_attendance_results import show_attendance_result
 
 
@@ -40,14 +40,10 @@ def voice_attendance_dialog(selected_subject_id):
 
             try:
                 # 2. Fetch students enrolled in the selected subject
-                enrolled_res = (
-                    supabase.table("subject_students")
-                    .select("*, students(*)")
-                    .eq("subject_id", selected_subject_id)
-                    .execute()
+                enrolled_students = get_enrolled_students_for_teacher(
+                    st.session_state.teacher_data["teacher_id"],
+                    selected_subject_id
                 )
-
-                enrolled_students = enrolled_res.data or []
 
                 if not enrolled_students:
                     st.warning("No students are enrolled in this subject.")

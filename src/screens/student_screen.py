@@ -389,7 +389,6 @@ def student_screen_register():
                         response_data = create_student(
                             new_name.strip(),
                             usn=normalized_usn,
-                            face_embedding=None,
                             voice_embedding=voice_emb
                         )
 

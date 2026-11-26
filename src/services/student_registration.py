@@ -53,7 +53,6 @@ def create_student_record(
     client,
     new_name,
     usn,
-    face_embedding=None,
     voice_embedding=None,
     usn_pattern=DEFAULT_USN_PATTERN
 ):
@@ -68,7 +67,6 @@ def create_student_record(
     data = {
         "name": new_name.strip(),
         "usn": normalized_usn,
-        "face_embedding": face_embedding,
         "voice_embedding": voice_embedding
     }
 
