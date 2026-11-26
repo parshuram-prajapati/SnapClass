@@ -32,7 +32,6 @@ Student voice profiles are generated with the Resemblyzer voice encoder. For voi
 - NumPy and Pandas
 - OpenCV-compatible YuNet and SFace ONNX models
 - Resemblyzer and Librosa
-- scikit-learn
 - bcrypt
 - SMTP email
 - Segno and Pillow
@@ -84,8 +83,6 @@ Install dependencies:
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
-
-> The `dlib-bin` and `setuptools<70.0.0` entries are kept for compatibility with the existing environment and dependencies.
 
 ## Supabase Setup
 
