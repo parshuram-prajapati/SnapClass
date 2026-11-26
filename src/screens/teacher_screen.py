@@ -27,6 +27,7 @@ from src.components.dialog_attendance_results import attendance_result_dialog
 from src.components.dialog_voice_attendance import voice_attendance_dialog
 from src.pipelines.face_pipeline import predict_attendance
 from src.pipelines.image_utils import safe_cleanup_memory
+from src.services.attendance_export import attendance_workbook_bytes
 
 
 def teacher_screen():
@@ -332,23 +333,36 @@ def teacher_tab_attendance_records():
             "Subject": r['subjects']['name'],
             "Subject Code": r['subjects']['subject_code'],
             "Student ID": student.get('student_id', 'N/A'),
+            "USN": student.get('usn') or 'N/A',
             "Student Name": student.get('name', 'Unknown Student'),
             "Attendance": "Present" if r.get('is_present') else "Absent"
         })
 
-    detailed_df = pd.DataFrame(detailed_data)
+    detailed_df = pd.DataFrame(
+        detailed_data,
+        columns=[
+            "Date",
+            "Time",
+            "Subject",
+            "Subject Code",
+            "Student ID",
+            "USN",
+            "Student Name",
+            "Attendance"
+        ]
+    )
     if not detailed_df.empty:
         detailed_df = detailed_df.sort_values(by=["Date", "Time", "Student Name"], ascending=[False, False, True])
 
-    csv_bytes = detailed_df.to_csv(index=False).encode('utf-8')
+    excel_bytes = attendance_workbook_bytes(detailed_df)
 
     with col_d2:
         file_suffix = "all" if selected_session_label == "All Dates & Sessions" else selected_session_label.split("—")[0].strip().replace(":", "-").replace(" ", "_")
         st.download_button(
-            label="Download CSV",
-            data=csv_bytes,
-            file_name=f"attendance_{file_suffix}.csv",
-            mime="text/csv",
+            label="Download Excel",
+            data=excel_bytes,
+            file_name=f"attendance_{file_suffix}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             type="primary",
             icon=":material/download:",
             width="stretch"
@@ -460,7 +474,10 @@ def teacher_screen_forgot_password():
             else:
                 with st.spinner("Sending reset link..."):
                     success, msg, raw_token, email_status = request_password_reset(reset_identifier)
-                    st.success("Reset link was sent to your email. Please check your inbox!")
+                    if success:
+                        st.success(msg)
+                    else:
+                        st.error(msg)
 
     with btn_col2:
         if st.button("Back to Login", width='stretch', key="cancel_forgot"):

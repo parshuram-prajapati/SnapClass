@@ -98,11 +98,13 @@ Create the required application tables in your Supabase project. The schema must
 - `student_face_embeddings`
 - `password_resets`
 
-The repository's `supabase_migration.sql` creates the `password_resets` table and adds the teacher `email` column. Run this SQL in the Supabase SQL Editor before enabling password reset:
+The repository's `supabase_migration.sql` creates the `password_resets` table, adds the teacher `email` column, removes public access to password-reset records, and adds USN support. Run this SQL in the Supabase SQL Editor when deploying these changes:
 
 1. Open **Supabase Dashboard → SQL Editor**.
 2. Open `supabase_migration.sql`.
 3. Run the migration.
+
+Existing students keep a `NULL` USN until one is assigned; the migration does not invent or delete student data. New student inserts require a non-empty USN, normalized to uppercase, and duplicate USNs are rejected. The default format can be changed with `USN_PATTERN`.
 
 ## Configuration
 
@@ -112,6 +114,7 @@ Create `.streamlit/secrets.toml` in the project root. This file is ignored by Gi
 SUPABASE_URL = "https://your-project.supabase.co"
 SUPABASE_KEY = "your-supabase-anon-key"
 SUPABASE_SERVICE_ROLE_KEY = "your-supabase-service-role-key"
+USN_PATTERN = "^[0-9][A-Z]{2}[0-9]{2}[A-Z]{2}[0-9]{3}$"
 
 SMTP_HOST = "smtp.gmail.com"
 SMTP_PORT = "587"
@@ -121,13 +124,16 @@ SMTP_SENDER_NAME = "Smart Attendance App"
 APP_BASE_URL = "http://localhost:8501"
 ```
 
-Alternatively, the application can read these values from environment variables. Supabase is required for normal application operation. `SUPABASE_SERVICE_ROLE_KEY`, SMTP settings, and `APP_BASE_URL` are optional for selected features, but should be kept server-side and must never be exposed in public client code.
+Alternatively, the application can read these values from environment variables. Supabase is required for normal application operation. `SUPABASE_SERVICE_ROLE_KEY` is required for biometric database operations and password resets; SMTP settings and `APP_BASE_URL` are optional for selected features. All privileged values must remain server-side and must never be exposed in public client code.
+
+`USN_PATTERN` is an optional regular expression used to validate new student USNs. The default matches the example format `2BL24CI028`. Set a different expression in Streamlit secrets or the environment for another college's format.
 
 ### Supported Environment Variable Names
 
 | Purpose | Names |
 |---|---|
 | Supabase | `SUPABASE_URL`, `SUPABASE_KEY`, `SUPABASE_SERVICE_ROLE_KEY` |
+| Student registration | `USN_PATTERN` |
 | SMTP | `SMTP_HOST` or `SMTP_SERVER`, `SMTP_PORT`, `SMTP_USER` or `SMTP_EMAIL`, `SMTP_PASSWORD` or `SMTP_PASS`, `SMTP_SENDER_NAME` |
 | Application URL | `APP_BASE_URL` |
 

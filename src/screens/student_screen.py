@@ -16,7 +16,14 @@ from src.pipelines.face_pipeline import (
     train_classifier
 )
 from src.pipelines.voice_pipeline import get_voice_embedding
-from src.database.db import get_all_students, create_student, get_student_subjects, get_student_attendance, unenroll_student_to_subject
+from src.database.db import (
+    get_all_students,
+    create_student,
+    get_student_subjects,
+    get_student_attendance,
+    unenroll_student_to_subject,
+    normalize_student_usn
+)
 import time
 
 from src.components.dialog_enroll import enroll_dialog
@@ -188,6 +195,18 @@ def student_screen_register():
             key="reg_student_name"
         )
 
+        def uppercase_usn_input():
+            st.session_state["reg_student_usn"] = (
+                st.session_state.get("reg_student_usn", "").strip().upper()
+            )
+
+        new_usn = st.text_input(
+            "Enter your USN (University Seat Number)",
+            placeholder="E.g. 2BL24CI028",
+            key="reg_student_usn",
+            on_change=uppercase_usn_input
+        )
+
         st.subheader("FaceID Enrollment")
         st.caption(
             "Capture exactly 4 clear photos of the same student. "
@@ -264,10 +283,20 @@ def student_screen_register():
             st.session_state.student_mode = "login"
             st.rerun()
 
+        try:
+            normalized_usn = normalize_student_usn(new_usn)
+            usn_error = None
+        except ValueError as exc:
+            normalized_usn = ""
+            usn_error = str(exc)
+
         if submit:
 
             if not new_name.strip():
                 st.warning("Please enter your full name.")
+
+            elif usn_error:
+                st.error(usn_error)
 
             elif any(photo is None for photo in captured_photos):
                 st.warning("Please capture all 4 face photos.")
@@ -359,6 +388,7 @@ def student_screen_register():
                         # Create student account
                         response_data = create_student(
                             new_name.strip(),
+                            usn=normalized_usn,
                             face_embedding=None,
                             voice_embedding=voice_emb
                         )
@@ -380,8 +410,9 @@ def student_screen_register():
                             train_classifier()
 
                             st.success(
-                                "Student registered successfully! "
-                                "All 4 SFace embeddings saved."
+                                "Student registered successfully!\n\n"
+                                f"Name: {new_name.strip()}\n\n"
+                                f"USN: {normalized_usn}"
                             )
 
                             st.session_state.is_logged_in = True

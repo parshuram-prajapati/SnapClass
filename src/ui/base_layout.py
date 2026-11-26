@@ -16,6 +16,40 @@ def style_background_home():
                     padding:2.5rem !important;
                     border-radius: 5rem !important;
                     }
+
+                @media (max-width: 640px) {
+                    .stApp {
+                        overflow-x: clip;
+                    }
+
+                    .stApp .block-container {
+                        box-sizing: border-box;
+                        max-width: 100% !important;
+                        padding-left: 1rem !important;
+                        padding-right: 1rem !important;
+                    }
+
+                    .stApp div[data-testid="stHorizontalBlock"] {
+                        flex-direction: column !important;
+                        gap: 1rem !important;
+                    }
+
+                    .stApp div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"] {
+                        box-sizing: border-box;
+                        flex: 1 1 100% !important;
+                        width: 100% !important;
+                        min-width: 0 !important;
+                        max-width: 100% !important;
+                        padding: 1.25rem !important;
+                        border-radius: 1.75rem !important;
+                    }
+
+                    .stApp div[data-testid="stImage"] img {
+                        max-width: 100%;
+                        height: auto;
+                        object-fit: contain;
+                    }
+                }
         </style>  
 
                 """
@@ -63,7 +97,44 @@ def style_base_layout():
                 line-height:1.1 1important;
                 margin-bottom:0rem !important;
             }
-                
+
+            .home-brand {
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                justify-content: center;
+                max-width: 100%;
+                margin: 1.875rem 0;
+                text-align: center;
+            }
+
+            .home-brand-logo {
+                display: block;
+                width: 100px;
+                height: auto;
+                max-width: 100%;
+            }
+
+            .home-brand-heading {
+                width: max-content;
+                max-width: 100%;
+                margin: 0 !important;
+                color: #E0E3FF !important;
+                font-family: 'Climate Crisis', sans-serif !important;
+                font-size: clamp(2rem, 5vw, 3.5rem) !important;
+                font-weight: 400;
+                letter-spacing: -0.035em;
+                line-height: 0.96 !important;
+                text-align: center;
+                word-break: normal;
+                overflow-wrap: normal;
+                hyphens: none;
+            }
+
+            .home-brand-heading span {
+                display: block;
+                white-space: nowrap;
+            }
 
             h2 {
                 font-family: 'Climate Crisis', sans-serif !important;
@@ -106,6 +177,22 @@ def style_base_layout():
 
             button:hover{
                 transform :scale(1.05)}
+
+            @media (max-width: 640px) {
+                .home-brand {
+                    margin: 1.25rem 0 1.5rem;
+                    padding-inline: 0.5rem;
+                }
+
+                .home-brand-logo {
+                    width: clamp(4.25rem, 15vw, 5rem);
+                }
+
+                .home-brand-heading {
+                    letter-spacing: -0.04em;
+                    line-height: 0.98 !important;
+                }
+            }
         </style>  
 
                 """

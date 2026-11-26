@@ -3,6 +3,7 @@ setuptools==80.9.0
 streamlit
 numpy==1.26.4
 pandas
+openpyxl
 
 # YuNet and SFace require the contrib modules; use headless OpenCV on Streamlit Cloud.
 opencv-contrib-python-headless==4.10.0.84

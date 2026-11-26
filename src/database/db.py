@@ -1,4 +1,12 @@
-from src.database.config import supabase, supabase_admin
+import logging
+
+from src.database.config import get_secret, supabase, supabase_admin
+from src.services.student_registration import (
+    DEFAULT_USN_PATTERN,
+    create_student_record,
+    normalize_usn,
+    student_usn_exists as check_student_usn_exists
+)
 import bcrypt
 import hashlib
 import secrets
@@ -6,8 +14,8 @@ import re
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Tuple, Dict, Any
 
-# In-memory fallback token store if Supabase table is not yet migrated
-_MEMORY_RESET_TOKENS: Dict[str, Dict[str, Any]] = {}
+logger = logging.getLogger(__name__)
+USN_PATTERN = get_secret("USN_PATTERN", DEFAULT_USN_PATTERN)
 
 
 def hash_pass(pwd: str) -> str:
@@ -111,6 +119,12 @@ def teacher_login(username_or_email, password):
 # PASSWORD RESET FUNCTIONALITY (Custom Authentication)
 # =============================================================================
 
+def _get_password_reset_client():
+    if supabase_admin is None:
+        raise RuntimeError("Server-side Supabase service role is not configured.")
+    return supabase_admin
+
+
 def request_password_reset(identifier: str, expiry_minutes: int = 15, send_email: bool = True) -> Tuple[bool, str, Optional[str], Dict[str, Any]]:
     """
     Initiates a password reset for a teacher.
@@ -122,26 +136,30 @@ def request_password_reset(identifier: str, expiry_minutes: int = 15, send_email
     """
     from src.services.email_service import send_password_reset_email, is_smtp_configured
 
-    raw_token = secrets.token_urlsafe(32)
-    token_hash_val = hash_token(raw_token)
-    expires_at = datetime.now(timezone.utc) + timedelta(minutes=expiry_minutes)
-
-    teacher = find_teacher_by_email_or_username(identifier)
-    
     # Generic message to prevent email enumeration
     generic_msg = (
         "If the entered email/username is registered in our system, "
         "a password reset link has been generated."
     )
-
     email_status = {
         "sent": False,
-        "message": "No account matched or email not provided.",
+        "message": "Password reset could not be completed.",
         "target_email": None
     }
 
+    try:
+        reset_client = _get_password_reset_client()
+    except RuntimeError as exc:
+        logger.error("Password reset unavailable (%s)", type(exc).__name__)
+        return False, "Password reset is temporarily unavailable.", None, email_status
+
+    raw_token = secrets.token_urlsafe(32)
+    token_hash_val = hash_token(raw_token)
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=expiry_minutes)
+
+    teacher = find_teacher_by_email_or_username(identifier)
+
     if not teacher:
-        # Do not store anything, return generic message with None token
         return True, generic_msg, None, email_status
 
     teacher_id = teacher["teacher_id"]
@@ -149,27 +167,16 @@ def request_password_reset(identifier: str, expiry_minutes: int = 15, send_email
     teacher_name = teacher.get("name", "Teacher")
     email_status["target_email"] = target_email
 
-    # Try persisting token hash to Supabase
-    saved_to_db = False
     try:
-        supabase.table("password_resets").insert({
+        reset_client.table("password_resets").insert({
             "teacher_id": teacher_id,
             "token_hash": token_hash_val,
             "expires_at": expires_at.isoformat(),
             "used": False
         }).execute()
-        saved_to_db = True
-    except Exception:
-        # Fallback to secure in-memory cache if table doesn't exist yet
-        saved_to_db = False
-
-    # Always keep in memory store as fallback / backup
-    _MEMORY_RESET_TOKENS[token_hash_val] = {
-        "teacher_id": teacher_id,
-        "expires_at": expires_at,
-        "used": False,
-        "created_at": datetime.now(timezone.utc)
-    }
+    except Exception as exc:
+        logger.error("Could not save password reset token (%s)", type(exc).__name__)
+        return False, "Password reset is temporarily unavailable.", None, email_status
 
     # Attempt to send email via SMTP if configured and target_email exists
     if send_email and target_email:
@@ -202,33 +209,31 @@ def verify_password_reset_token(raw_token: str) -> Tuple[bool, Optional[int], st
     token_hash_val = hash_token(raw_token.strip())
     now_utc = datetime.now(timezone.utc)
 
-    # 1. Check Supabase password_resets table first
     try:
-        res = supabase.table("password_resets").select("*").eq("token_hash", token_hash_val).execute()
-        if res.data:
-            entry = res.data[0]
-            if entry.get("used"):
-                return False, None, "This password reset link has already been used."
+        reset_client = _get_password_reset_client()
+        response = (
+            reset_client.table("password_resets")
+            .select("teacher_id, token_hash, expires_at, used")
+            .eq("token_hash", token_hash_val)
+            .limit(1)
+            .execute()
+        )
+    except Exception as exc:
+        logger.error("Could not verify password reset token (%s)", type(exc).__name__)
+        return False, None, "Password reset verification is temporarily unavailable."
 
-            expires_str = entry.get("expires_at", "")
-            if expires_str:
-                exp_dt = datetime.fromisoformat(expires_str.replace("Z", "+00:00"))
-                if now_utc > exp_dt:
-                    return False, None, "This password reset link has expired."
-
-            return True, entry.get("teacher_id"), "Token is valid."
-    except Exception:
-        # PostgREST error or table not yet migrated, fall back to memory
-        pass
-
-    # 2. Check in-memory token storage
-    if token_hash_val in _MEMORY_RESET_TOKENS:
-        entry = _MEMORY_RESET_TOKENS[token_hash_val]
-        if entry["used"]:
+    if response.data:
+        entry = response.data[0]
+        if entry.get("used"):
             return False, None, "This password reset link has already been used."
-        if now_utc > entry["expires_at"]:
-            return False, None, "This password reset link has expired."
-        return True, entry["teacher_id"], "Token is valid."
+
+        expires_str = entry.get("expires_at", "")
+        if expires_str:
+            exp_dt = datetime.fromisoformat(expires_str.replace("Z", "+00:00"))
+            if now_utc > exp_dt:
+                return False, None, "This password reset link has expired."
+
+        return True, entry.get("teacher_id"), "Token is valid."
 
     return False, None, "Invalid or unrecognized reset token."
 
@@ -253,21 +258,24 @@ def reset_teacher_password(raw_token: str, new_password: str) -> Tuple[bool, str
     token_hash_val = hash_token(raw_token.strip())
     hashed_pwd = hash_pass(new_password)
 
-    # Update teacher password in Supabase
     try:
-        supabase.table("teachers").update({"password": hashed_pwd}).eq("teacher_id", teacher_id).execute()
-    except Exception as e:
-        return False, f"Failed to update password: {str(e)}"
+        reset_client = _get_password_reset_client()
+        response = reset_client.rpc(
+            "redeem_teacher_password_reset",
+            {
+                "p_token_hash": token_hash_val,
+                "p_password_hash": hashed_pwd
+            }
+        ).execute()
+    except Exception as exc:
+        logger.error("Could not complete password reset (%s)", type(exc).__name__)
+        return False, "Password reset could not be completed. Please try again."
 
-    # Invalidate token in Supabase
-    try:
-        supabase.table("password_resets").update({"used": True}).eq("token_hash", token_hash_val).execute()
-    except Exception:
-        pass
-
-    # Invalidate token in memory
-    if token_hash_val in _MEMORY_RESET_TOKENS:
-        _MEMORY_RESET_TOKENS[token_hash_val]["used"] = True
+    redeemed = response.data
+    if isinstance(redeemed, list) and len(redeemed) == 1:
+        redeemed = redeemed[0]
+    if redeemed is not True:
+        return False, "This password reset link is invalid, expired, or already used."
 
     return True, "Your password has been successfully updated! You can now log in."
 
@@ -277,10 +285,24 @@ def get_all_students():
     response = supabase.table('students').select("*").execute()
     return response.data
 
-def create_student(new_name, face_embedding=None, voice_embedding=None):
-    data = {'name': new_name, 'face_embedding':face_embedding, "voice_embedding": voice_embedding}
-    response = supabase.table('students').insert(data).execute()
-    return response.data
+
+def normalize_student_usn(usn):
+    return normalize_usn(usn, USN_PATTERN)
+
+
+def student_usn_exists(usn):
+    return check_student_usn_exists(supabase, usn, USN_PATTERN)
+
+
+def create_student(new_name, usn, face_embedding=None, voice_embedding=None):
+    return create_student_record(
+        supabase,
+        new_name,
+        usn,
+        face_embedding=face_embedding,
+        voice_embedding=voice_embedding,
+        usn_pattern=USN_PATTERN
+    )
 
 
 def create_subject(subject_code, name, section, teacher_id):

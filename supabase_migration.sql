@@ -22,33 +22,130 @@ CREATE INDEX IF NOT EXISTS idx_teachers_email ON public.teachers(email);
 CREATE INDEX IF NOT EXISTS idx_password_resets_token_hash ON public.password_resets(token_hash);
 CREATE INDEX IF NOT EXISTS idx_password_resets_expires_at ON public.password_resets(expires_at);
 
--- 4. Enable Row Level Security (RLS) and grant appropriate access
+-- 4. Enable Row Level Security (RLS) and remove public password-reset access
 ALTER TABLE public.password_resets ENABLE ROW LEVEL SECURITY;
 
--- Allow anon role (used by frontend client) to insert and select reset tokens
+DROP POLICY IF EXISTS "Allow anon select on password_resets"
+    ON public.password_resets;
+DROP POLICY IF EXISTS "Allow anon insert on password_resets"
+    ON public.password_resets;
+DROP POLICY IF EXISTS "Allow anon update on password_resets"
+    ON public.password_resets;
+
+REVOKE ALL ON TABLE public.password_resets FROM PUBLIC, anon, authenticated;
+GRANT SELECT, INSERT, UPDATE ON TABLE public.password_resets TO service_role;
+GRANT UPDATE (password) ON TABLE public.teachers TO service_role;
+
+-- Redeem a reset token and update the password in one database transaction.
+CREATE OR REPLACE FUNCTION public.redeem_teacher_password_reset(
+    p_token_hash TEXT,
+    p_password_hash TEXT
+)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY INVOKER
+SET search_path = ''
+AS $$
+DECLARE
+    reset_row public.password_resets%ROWTYPE;
+BEGIN
+    SELECT *
+    INTO reset_row
+    FROM public.password_resets
+    WHERE token_hash = p_token_hash
+      AND used = FALSE
+      AND expires_at > pg_catalog.now()
+    FOR UPDATE;
+
+    IF NOT FOUND THEN
+        RETURN FALSE;
+    END IF;
+
+    UPDATE public.teachers
+    SET password = p_password_hash
+    WHERE teacher_id = reset_row.teacher_id;
+
+    IF NOT FOUND THEN
+        RETURN FALSE;
+    END IF;
+
+    UPDATE public.password_resets
+    SET used = TRUE
+    WHERE id = reset_row.id;
+
+    RETURN TRUE;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.redeem_teacher_password_reset(TEXT, TEXT)
+    FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.redeem_teacher_password_reset(TEXT, TEXT)
+    TO service_role;
+
+-- 5. Add USN support without blocking legacy students that have no USN yet.
+ALTER TABLE public.students
+ADD COLUMN IF NOT EXISTS usn TEXT;
+
 DO $$
 BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_policies 
-        WHERE tablename = 'password_resets' AND policyname = 'Allow anon select on password_resets'
+    IF EXISTS (
+        SELECT 1
+        FROM public.students
+        WHERE usn IS NOT NULL
+          AND pg_catalog.btrim(usn) <> ''
+        GROUP BY pg_catalog.upper(pg_catalog.btrim(usn))
+        HAVING COUNT(*) > 1
     ) THEN
-        CREATE POLICY "Allow anon select on password_resets" 
-        ON public.password_resets FOR SELECT USING (true);
+        RAISE EXCEPTION
+            'Duplicate USNs exist; resolve them before applying the USN unique index.';
+    END IF;
+END;
+$$;
+
+UPDATE public.students
+SET usn = NULL
+WHERE usn IS NOT NULL
+  AND pg_catalog.btrim(usn) = '';
+
+UPDATE public.students
+SET usn = pg_catalog.upper(pg_catalog.btrim(usn))
+WHERE usn IS NOT NULL
+  AND usn <> pg_catalog.upper(pg_catalog.btrim(usn));
+
+CREATE UNIQUE INDEX IF NOT EXISTS students_usn_normalized_unique_idx
+    ON public.students (pg_catalog.upper(pg_catalog.btrim(usn)))
+    WHERE usn IS NOT NULL AND pg_catalog.btrim(usn) <> '';
+
+CREATE OR REPLACE FUNCTION public.normalize_student_usn()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SET search_path = ''
+AS $$
+BEGIN
+    IF TG_OP = 'INSERT'
+       AND (NEW.usn IS NULL OR pg_catalog.btrim(NEW.usn) = '') THEN
+        RAISE EXCEPTION 'USN is required for new student registrations'
+            USING ERRCODE = '23502';
     END IF;
 
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_policies 
-        WHERE tablename = 'password_resets' AND policyname = 'Allow anon insert on password_resets'
-    ) THEN
-        CREATE POLICY "Allow anon insert on password_resets" 
-        ON public.password_resets FOR INSERT WITH CHECK (true);
+    IF NEW.usn IS NULL OR pg_catalog.btrim(NEW.usn) = '' THEN
+        NEW.usn := NULL;
+    ELSE
+        NEW.usn := pg_catalog.upper(pg_catalog.btrim(NEW.usn));
     END IF;
 
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_policies 
-        WHERE tablename = 'password_resets' AND policyname = 'Allow anon update on password_resets'
-    ) THEN
-        CREATE POLICY "Allow anon update on password_resets" 
-        ON public.password_resets FOR UPDATE USING (true);
-    END IF;
-END $$;
+    RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS students_require_usn_on_insert ON public.students;
+CREATE TRIGGER students_require_usn_on_insert
+    BEFORE INSERT ON public.students
+    FOR EACH ROW
+    EXECUTE FUNCTION public.normalize_student_usn();
+
+DROP TRIGGER IF EXISTS students_normalize_usn_on_update ON public.students;
+CREATE TRIGGER students_normalize_usn_on_update
+    BEFORE UPDATE OF usn ON public.students
+    FOR EACH ROW
+    EXECUTE FUNCTION public.normalize_student_usn();
