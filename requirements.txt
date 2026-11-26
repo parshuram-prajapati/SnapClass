@@ -1,5 +1,7 @@
+# Legacy webrtcvad imports pkg_resources; setuptools 82 removed it.
+setuptools==80.9.0
 streamlit
-numpy
+numpy==1.26.4
 pandas
 
 # YuNet and SFace require the contrib modules; use headless OpenCV on Streamlit Cloud.
@@ -12,5 +14,6 @@ segno
 pillow
 
 # Voice attendance
-librosa
-resemblyzer
+librosa==0.10.2.post1
+resemblyzer==0.1.4
+webrtcvad==2.0.10

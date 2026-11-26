@@ -55,7 +55,7 @@ supabase_migration.sql         # Password-reset database migration
 
 ## Prerequisites
 
-- Python 3.10 or newer
+- Python 3.11 (also select Python 3.11 in Streamlit Community Cloud's deployment settings)
 - A Supabase project
 - A camera for face registration and login
 - A microphone for voice enrollment and attendance
@@ -73,7 +73,7 @@ cd ai-attendance-project-app-main
 Create and activate a virtual environment:
 
 ```powershell
-python -m venv .venv
+py -3.11 -m venv .venv
 .venv\Scripts\Activate.ps1
 ```
 
@@ -83,6 +83,8 @@ Install dependencies:
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
+
+For Streamlit Community Cloud, select **Python 3.11** in **Advanced settings → Python version** when deploying the app. Community Cloud stores this runtime selection in the app settings; a `runtime.txt` file is not required.
 
 ## Supabase Setup
 
