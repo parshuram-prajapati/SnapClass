@@ -105,6 +105,17 @@ def student_dashboard():
 def student_screen():
     style_background_dashboard()
     style_base_layout()
+    st.markdown(
+        """
+        <style>
+        .stApp .stCameraInput video,
+        .stApp .stCameraInput img[alt="Snapshot"] {
+            transform: scaleX(-1) !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True
+    )
 
     if "student_data" in st.session_state:
         student_dashboard()
